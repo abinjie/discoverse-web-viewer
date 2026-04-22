@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DISCOVERSE WebGL 360遥操作</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; background: #111527; color: #d7defc; }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    #root { display: grid; grid-template-columns: 1fr 320px; height: 100%; }
+    #view { position: relative; }
+    #panel { background: #1c233a; padding: 14px; border-left: 1px solid #2d3552; }
+    .row { margin: 8px 0; font-size: 13px; color: #9db0ff; }
+    .btn { margin: 6px 6px 0 0; padding: 8px 10px; border: 0; border-radius: 6px; cursor: pointer; }
+    .btn-main { background: #7aa2f7; color: #111527; }
+    .btn-sub { background: #3c476f; color: #d7defc; }
+    .tip { color: #7f8cc2; font-size: 12px; line-height: 1.5; margin-top: 12px; }
+    #status { color: #86e1b3; font-size: 12px; margin-top: 8px; }
+    .code { color: #f7a4a4; }
+    @media (max-width: 1000px) {
+      #root { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+      #panel { border-left: 0; border-top: 1px solid #2d3552; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div id="view"></div>
+    <div id="panel">
+      <h3 style="margin: 0 0 8px 0;">WebGL 360°视角</h3>
+      <div class="row">坐标系：armbase 本地坐标（米）</div>
+      <div class="row">末端：<span id="eef">-</span></div>
+      <div class="row">目标：<span id="target">-</span></div>
+      <button class="btn btn-main" id="modeTranslate">平移模式(T)</button>
+      <button class="btn btn-sub" id="modeRotate">旋转模式(R)</button>
+      <button class="btn btn-sub" id="btnReset">重置仿真</button>
+      <button class="btn btn-sub" id="btnMjpeg">切到MJPEG页面</button>
+      <div id="status">连接中...</div>
+      <div class="tip">
+        操作说明：<br />
+        - 鼠标左键拖动空白区域：360°旋转视角<br />
+        - 滚轮：缩放<br />
+        - 拖动彩色坐标轴：移动目标点<br />
+        - 点击“旋转模式”后拖动圆环：旋转目标姿态<br />
+        - 快捷键 <span class="code">T</span>/<span class="code">R</span> 切平移/旋转
+      </div>
+    </div>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.164.1/build/three.module.js"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from "https://unpkg.com/three@0.164.1/build/three.module.js";
+    import { OrbitControls } from "https://unpkg.com/three@0.164.1/examples/jsm/controls/OrbitControls.js";
+    import { TransformControls } from "https://unpkg.com/three@0.164.1/examples/jsm/controls/TransformControls.js";
+    import { OBJLoader } from "https://unpkg.com/three@0.164.1/examples/jsm/loaders/OBJLoader.js";
+
+    const view = document.getElementById("view");
+    const statusEl = document.getElementById("status");
+    const eefEl = document.getElementById("eef");
+    const targetEl = document.getElementById("target");
+
+    THREE.Object3D.DEFAULT_UP.set(0, 0, 1); // 与 MuJoCo 保持 z-up
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0e1424);
+
+    const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 100);
+    camera.up.set(0, 0, 1);
+    camera.position.set(1.8, -1.8, 1.3);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    view.appendChild(renderer.domElement);
+
+    const orbit = new OrbitControls(camera, renderer.domElement);
+    orbit.target.set(0, 0, 0.35);
+    orbit.enableDamping = true;
+
+    const light1 = new THREE.DirectionalLight(0xffffff, 0.9);
+    light1.position.set(2.5, -2, 3);
+    scene.add(light1);
+    scene.add(new THREE.AmbientLight(0x99aadd, 0.5));
+
+    const grid = new THREE.GridHelper(4, 40, 0x4a5d92, 0x2b3557);
+    grid.rotation.x = Math.PI / 2;
+    scene.add(grid);
+
+    const table = new THREE.Mesh(
+      new THREE.BoxGeometry(0.9, 0.6, 0.03),
+      new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.8 })
+    );
+    // 注意这里是 armbase 局部坐标系，桌面仅用于视觉参考
+    table.position.set(0.35, 0.0, -0.03);
+    scene.add(table);
+
+    const base = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.05, 0.07, 0.08, 20),
+      new THREE.MeshStandardMaterial({ color: 0x222222 })
+    );
+    base.position.set(0, 0, 0.05);
+    base.visible = false;
+    scene.add(base);
+
+    const endpoint = new THREE.Mesh(
+      new THREE.SphereGeometry(0.018, 24, 24),
+      new THREE.MeshStandardMaterial({ color: 0x44ff99 })
+    );
+    scene.add(endpoint);
+
+    const target = new THREE.Mesh(
+      new THREE.SphereGeometry(0.023, 24, 24),
+      new THREE.MeshStandardMaterial({ color: 0xffaa44, emissive: 0x552a00, emissiveIntensity: 0.35 })
+    );
+    scene.add(target);
+
+    const linkMat = new THREE.LineBasicMaterial({ color: 0xaab8ff });
+    const linkGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+    const linkLine = new THREE.Line(linkGeo, linkMat);
+    scene.add(linkLine);
+
+    const axes = new THREE.AxesHelper(0.15);
+    scene.add(axes);
+
+    // --- 真实 airbot_play mesh（OBJ） ---
+    const meshRoot = new THREE.Group();
+    scene.add(meshRoot);
+
+    const objLoader = new OBJLoader();
+    const meshMatDark = new THREE.MeshStandardMaterial({ color: 0x2a2e39, metalness: 0.25, roughness: 0.65 });
+    const meshMatLight = new THREE.MeshStandardMaterial({ color: 0xdadce3, metalness: 0.15, roughness: 0.55 });
+
+    function toXYZ(v) { return new THREE.Vector3(v[0], v[1], v[2]); }
+    function quatFromWxyz(q) { return new THREE.Quaternion(q[1], q[2], q[3], q[0]); }
+
+    function cloneWithMaterial(obj, material) {
+      const c = obj.clone(true);
+      c.traverse((n) => {
+        if (n.isMesh) {
+          n.material = material;
+          n.castShadow = true;
+          n.receiveShadow = true;
+        }
+      });
+      return c;
+    }
+
+    async function loadObj(url) {
+      return await new Promise((resolve, reject) => {
+        objLoader.load(url, resolve, undefined, reject);
+      });
+    }
+
+    async function buildAirbotMesh() {
+      statusEl.textContent = "加载机械臂 mesh...";
+      const files = {
+        arm_base_0: "/models/meshes/airbot_play/arm_base_0.obj",
+        arm_base_1: "/models/meshes/airbot_play/arm_base_1.obj",
+        link1: "/models/meshes/airbot_play/link1.obj",
+        link2_0: "/models/meshes/airbot_play/link2_0.obj",
+        link2_1: "/models/meshes/airbot_play/link2_1.obj",
+        link3_0: "/models/meshes/airbot_play/link3_0.obj",
+        link3_1: "/models/meshes/airbot_play/link3_1.obj",
+        link4: "/models/meshes/airbot_play/link4.obj",
+        link5_0: "/models/meshes/airbot_play/link5_0.obj",
+        link5_1: "/models/meshes/airbot_play/link5_1.obj",
+        link6: "/models/meshes/airbot_play/link6.obj",
+        camera_stand: "/models/meshes/airbot_play/camera_stand.obj",
+        left: "/models/meshes/airbot_play/left.obj",
+        right: "/models/meshes/airbot_play/right.obj",
+      };
+      const entries = await Promise.all(Object.entries(files).map(async ([k, url]) => [k, await loadObj(url)]));
+      const libs = Object.fromEntries(entries);
+
+      const linkBase = new THREE.Group();
+      meshRoot.add(linkBase);
+      const armBase0 = cloneWithMaterial(libs.arm_base_0, meshMatDark);
+      armBase0.position.set(0, 0, -0.0015);
+      linkBase.add(armBase0);
+      linkBase.add(cloneWithMaterial(libs.arm_base_1, meshMatLight));
+
+      const j1Frame = new THREE.Group();
+      j1Frame.position.set(0, 0, 0.1172);
+      linkBase.add(j1Frame);
+      const j1Rot = new THREE.Group();
+      j1Frame.add(j1Rot);
+      const link1 = new THREE.Group(); j1Rot.add(link1);
+      link1.add(cloneWithMaterial(libs.link1, meshMatLight));
+
+      const j2Frame = new THREE.Group();
+      j2Frame.quaternion.copy(quatFromWxyz([0.135866, 0.135867, -0.69393, 0.693932]));
+      link1.add(j2Frame);
+      const j2Rot = new THREE.Group();
+      j2Frame.add(j2Rot);
+      const link2 = new THREE.Group(); j2Rot.add(link2);
+      link2.add(cloneWithMaterial(libs.link2_0, meshMatDark));
+      link2.add(cloneWithMaterial(libs.link2_1, meshMatLight));
+
+      const j3Frame = new THREE.Group();
+      j3Frame.position.set(0.27009, 0, 0);
+      j3Frame.quaternion.copy(quatFromWxyz([0.192144, 0, 0, -0.981367]));
+      link2.add(j3Frame);
+      const j3Rot = new THREE.Group();
+      j3Frame.add(j3Rot);
+      const link3 = new THREE.Group(); j3Rot.add(link3);
+      link3.add(cloneWithMaterial(libs.link3_0, meshMatDark));
+      link3.add(cloneWithMaterial(libs.link3_1, meshMatLight));
+
+      const j4Frame = new THREE.Group();
+      j4Frame.position.set(0.29015, 0, 0);
+      j4Frame.quaternion.copy(quatFromWxyz([-2.59734e-06, 0.707105, 2.59735e-06, 0.707108]));
+      link3.add(j4Frame);
+      const j4Rot = new THREE.Group();
+      j4Frame.add(j4Rot);
+      const link4 = new THREE.Group(); j4Rot.add(link4);
+      link4.add(cloneWithMaterial(libs.link4, meshMatLight));
+
+      const j5Frame = new THREE.Group();
+      j5Frame.quaternion.copy(quatFromWxyz([0.707105, 0.707108, 0, 0]));
+      link4.add(j5Frame);
+      const j5Rot = new THREE.Group();
+      j5Frame.add(j5Rot);
+      const link5 = new THREE.Group(); j5Rot.add(link5);
+      link5.add(cloneWithMaterial(libs.link5_0, meshMatDark));
+      link5.add(cloneWithMaterial(libs.link5_1, meshMatLight));
+
+      const j6Frame = new THREE.Group();
+      j6Frame.position.set(0, 0.23645, 0);
+      j6Frame.quaternion.copy(quatFromWxyz([0.499998, -0.5, 0.5, 0.500002]));
+      link5.add(j6Frame);
+      const j6Rot = new THREE.Group();
+      j6Frame.add(j6Rot);
+      const link6 = new THREE.Group(); j6Rot.add(link6);
+      link6.add(cloneWithMaterial(libs.link6, meshMatDark));
+      link6.add(cloneWithMaterial(libs.camera_stand, meshMatDark));
+
+      // MuJoCo xml: body left/right 在 link6 下无额外 pos/quat，滑动关节轴均为 y
+      const leftSlide = new THREE.Group();
+      link6.add(leftSlide);
+      leftSlide.add(cloneWithMaterial(libs.right, meshMatLight)); // xml中 left body 使用 right mesh
+      const rightSlide = new THREE.Group();
+      link6.add(rightSlide);
+      rightSlide.add(cloneWithMaterial(libs.left, meshMatLight)); // xml中 right body 使用 left mesh
+
+      return {
+        armJoints: [j1Rot, j2Rot, j3Rot, j4Rot, j5Rot, j6Rot],
+        leftSlide,
+        rightSlide,
+      };
+    }
+
+    let armJointRotators = [];
+    let leftSlideJoint = null;
+    let rightSlideJoint = null;
+    buildAirbotMesh()
+      .then((robot) => {
+        armJointRotators = robot.armJoints;
+        leftSlideJoint = robot.leftSlide;
+        rightSlideJoint = robot.rightSlide;
+        statusEl.textContent = "机械臂 mesh 已加载";
+      })
+      .catch((err) => {
+        console.error("load mesh failed", err);
+        statusEl.textContent = "机械臂 mesh 加载失败（请看控制台）";
+      });
+
+    const tf = new TransformControls(camera, renderer.domElement);
+    tf.attach(target);
+    tf.setMode("translate");
+    tf.setSize(0.9);
+    tf.addEventListener("dragging-changed", (ev) => { orbit.enabled = !ev.value; });
+    scene.add(tf);
+
+    const fmt = (v) => Number(v).toFixed(3);
+    const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+    const toWxyz = (q) => [q.w, q.x, q.y, q.z];
+    const fromWxyz = (wxyz) => new THREE.Quaternion(wxyz[1], wxyz[2], wxyz[3], wxyz[0]);
+
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onopen = () => { statusEl.textContent = "WebSocket 已连接"; };
+    ws.onclose = () => { statusEl.textContent = "WebSocket 断开"; };
+    ws.onerror = () => { statusEl.textContent = "WebSocket 错误"; };
+
+    let latestQuat = [1, 0, 0, 0];
+    let dragging = false;
+    tf.addEventListener("mouseDown", () => { dragging = true; });
+    tf.addEventListener("mouseUp", () => { dragging = false; sendTarget(); });
+    tf.addEventListener("objectChange", () => {
+      if (tf.mode === "rotate") {
+        latestQuat = toWxyz(target.quaternion);
+      }
+      sendTarget();
+    });
+
+    function sendTarget() {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      const pos = [
+        clamp(target.position.x, -0.5, 0.8),
+        clamp(target.position.y, -0.6, 0.6),
+        clamp(target.position.z, -0.2, 0.9),
+      ];
+      target.position.set(pos[0], pos[1], pos[2]);
+      const quat = latestQuat;
+      ws.send(JSON.stringify({ cmd: "set_target", pos, quat_wxyz: quat }));
+      targetEl.textContent = `${fmt(pos[0])}, ${fmt(pos[1])}, ${fmt(pos[2])}`;
+    }
+
+    async function syncState() {
+      try {
+        const r = await fetch("/state", { cache: "no-store" });
+        const j = await r.json();
+        if (!j.ok) return;
+
+        const jq = j.jq || [];
+        for (let i = 0; i < armJointRotators.length && i < jq.length; i++) {
+          armJointRotators[i].rotation.z = jq[i];
+        }
+        const gripper = (jq.length > 6) ? jq[6] : 0.0;
+        if (leftSlideJoint) leftSlideJoint.position.y = Math.max(0.0, Math.min(0.04, gripper));
+        if (rightSlideJoint) rightSlideJoint.position.y = Math.max(-0.04, Math.min(0.0, -gripper));
+        if (!armJointRotators.length) {
+          base.visible = true;
+        }
+
+        const ep = j.eef_pos || [0, 0, 0];
+        endpoint.position.set(ep[0], ep[1], ep[2]);
+        eefEl.textContent = `${fmt(ep[0])}, ${fmt(ep[1])}, ${fmt(ep[2])}`;
+
+        if (!dragging) {
+          const tp = j.target_pos || [0, 0, 0];
+          const tq = j.target_quat || [1, 0, 0, 0];
+          target.position.set(tp[0], tp[1], tp[2]);
+          target.quaternion.copy(fromWxyz(tq));
+          latestQuat = tq;
+          targetEl.textContent = `${fmt(tp[0])}, ${fmt(tp[1])}, ${fmt(tp[2])}`;
+        }
+
+        const p0 = new THREE.Vector3(0, 0, 0.05);
+        const p1 = endpoint.position.clone();
+        linkLine.geometry.setFromPoints([p0, p1]);
+      } catch (_) {}
+    }
+
+    setInterval(syncState, 50);
+    syncState();
+
+    window.addEventListener("keydown", (ev) => {
+      if (ev.key.toLowerCase() === "t") tf.setMode("translate");
+      if (ev.key.toLowerCase() === "r") tf.setMode("rotate");
+    });
+    document.getElementById("modeTranslate").onclick = () => tf.setMode("translate");
+    document.getElementById("modeRotate").onclick = () => tf.setMode("rotate");
+    document.getElementById("btnReset").onclick = () => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ cmd: "reset" }));
+    };
+    document.getElementById("btnMjpeg").onclick = () => { location.href = "/mjpeg"; };
+
+    function resize() {
+      const w = view.clientWidth;
+      const h = view.clientHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
+    function render() {
+      orbit.update();
+      renderer.render(scene, camera);
+      requestAnimationFrame(render);
+    }
+    render();
+  </script>
+</body>
+</html>

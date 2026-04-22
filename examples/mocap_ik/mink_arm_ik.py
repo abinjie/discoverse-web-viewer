@@ -4,6 +4,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 from typing import Optional, Tuple, Dict, Any
 from discoverse.utils import get_site_tmat
+from discoverse.utils.qp_solver import resolve_mink_qp_solver
 
 class Mink_IK:
     def __init__(self, mjcf_path, arm_dof):
@@ -22,7 +23,7 @@ class Mink_IK:
 
         self.posture_task.set_target_from_configuration(self.configuration)
 
-        self.solver = "quadprog"
+        self.solver = resolve_mink_qp_solver("quadprog")
         self.pos_threshold = 5e-3
         self.ori_threshold = 1e-2
         self.max_iters = 200

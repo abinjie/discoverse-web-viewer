@@ -12,6 +12,7 @@ from typing import Optional, Tuple, Dict, Any
 from scipy.spatial.transform import Rotation
 
 from .robot_config import RobotConfigLoader
+from discoverse.utils.qp_solver import resolve_mink_qp_solver
 
 class MinkIKSolver:
     """基于Mink的通用逆运动学求解器"""
@@ -42,7 +43,9 @@ class MinkIKSolver:
             raise ValueError("IK solver configuration is missing or invalid.")
 
         self.solver_config = ik_solver_config
-        self.solver_type = self.solver_config.get('solver_type', 'quadprog')
+        self.solver_type = resolve_mink_qp_solver(
+            self.solver_config.get('solver_type', 'quadprog')
+        )
         self.position_tolerance = self.solver_config.get('position_tolerance', 1e-4)
         self.orientation_tolerance = self.solver_config.get('orientation_tolerance', 1e-4)
         self.max_iterations = self.solver_config.get('max_iterations', 50)
