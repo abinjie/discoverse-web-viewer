@@ -68,7 +68,7 @@
 
     THREE.Object3D.DEFAULT_UP.set(0, 0, 1); // 与 MuJoCo 保持 z-up
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0e1424);
+    scene.background = new THREE.Color(0x16203a);
 
     const camera = new THREE.PerspectiveCamera(50, 1, 0.01, 100);
     camera.up.set(0, 0, 1);
@@ -76,28 +76,54 @@
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.25;
     view.appendChild(renderer.domElement);
 
     const orbit = new OrbitControls(camera, renderer.domElement);
     orbit.target.set(0, 0, 0.35);
     orbit.enableDamping = true;
 
-    const light1 = new THREE.DirectionalLight(0xffffff, 0.9);
-    light1.position.set(2.5, -2, 3);
-    scene.add(light1);
-    scene.add(new THREE.AmbientLight(0x99aadd, 0.5));
+    const hemi = new THREE.HemisphereLight(0xeaf1ff, 0x4a5f86, 0.8);
+    scene.add(hemi);
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
+    keyLight.position.set(2.5, -2, 3.2);
+    scene.add(keyLight);
+    const fillLight = new THREE.DirectionalLight(0xdbe6ff, 0.55);
+    fillLight.position.set(-2.2, 1.8, 2.4);
+    scene.add(fillLight);
+    scene.add(new THREE.AmbientLight(0xaec0e6, 0.35));
 
-    const grid = new THREE.GridHelper(4, 40, 0x4a5d92, 0x2b3557);
+    const grid = new THREE.GridHelper(4, 40, 0x6378b7, 0x324267);
     grid.rotation.x = Math.PI / 2;
     scene.add(grid);
 
-    const table = new THREE.Mesh(
-      new THREE.BoxGeometry(0.9, 0.6, 0.03),
-      new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.8 })
+    // 注意这里是 armbase 局部坐标系，桌面用于还原常见任务视角
+    const tableGroup = new THREE.Group();
+    scene.add(tableGroup);
+    const tableTopSize = { x: 0.9, y: 0.6, z: 0.03 };
+    const tableTop = new THREE.Mesh(
+      new THREE.BoxGeometry(tableTopSize.x, tableTopSize.y, tableTopSize.z),
+      new THREE.MeshStandardMaterial({ color: 0xf2f3f7, roughness: 0.78, metalness: 0.04 })
     );
-    // 注意这里是 armbase 局部坐标系，桌面仅用于视觉参考
-    table.position.set(0.35, 0.0, -0.03);
-    scene.add(table);
+    tableTop.position.set(0.35, 0.0, -0.03);
+    tableGroup.add(tableTop);
+
+    const legMat = new THREE.MeshStandardMaterial({ color: 0xd7d9de, roughness: 0.72, metalness: 0.1 });
+    const legH = 0.72;
+    const legW = 0.03;
+    const legPos = [
+      [tableTop.position.x - tableTopSize.x / 2 + 0.05, tableTop.position.y - tableTopSize.y / 2 + 0.05],
+      [tableTop.position.x - tableTopSize.x / 2 + 0.05, tableTop.position.y + tableTopSize.y / 2 - 0.05],
+      [tableTop.position.x + tableTopSize.x / 2 - 0.05, tableTop.position.y - tableTopSize.y / 2 + 0.05],
+      [tableTop.position.x + tableTopSize.x / 2 - 0.05, tableTop.position.y + tableTopSize.y / 2 - 0.05],
+    ];
+    for (const [lx, ly] of legPos) {
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(legW, legW, legH), legMat);
+      leg.position.set(lx, ly, tableTop.position.z - tableTopSize.z / 2 - legH / 2);
+      tableGroup.add(leg);
+    }
 
     const base = new THREE.Mesh(
       new THREE.CylinderGeometry(0.05, 0.07, 0.08, 20),
