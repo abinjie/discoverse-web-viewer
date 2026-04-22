@@ -34,7 +34,6 @@
       <button class="btn btn-main" id="modeTranslate">平移模式(T)</button>
       <button class="btn btn-sub" id="modeRotate">旋转模式(R)</button>
       <button class="btn btn-sub" id="btnReset">重置仿真</button>
-      <button class="btn btn-sub" id="btnMjpeg">切到MJPEG页面</button>
       <div id="status">连接中...</div>
       <div class="tip">
         操作说明：<br />
@@ -385,7 +384,6 @@
     document.getElementById("btnReset").onclick = () => {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ cmd: "reset" }));
     };
-    document.getElementById("btnMjpeg").onclick = () => { location.href = "/mjpeg"; };
 
     function resize() {
       const w = view.clientWidth;

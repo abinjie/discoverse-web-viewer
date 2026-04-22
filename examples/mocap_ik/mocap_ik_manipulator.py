@@ -53,26 +53,14 @@ class Manipulator:
             args.inference = True
             args.mouse_3d = False
             self._web_stop = threading.Event()
-            self._latest_frame_lock = threading.Lock()
-            self._latest_jpeg = None
-            self._web_node_ready = threading.Event()
             self._target_cmd_lock = threading.Lock()
             self._web_cmd_pos = np.zeros(3)
             self._web_cmd_quat = np.array([1.0, 0.0, 0.0, 0.0])
             self._web_reset_evt = threading.Event()
         else:
             self._web_stop = None
-            self._latest_frame_lock = None
-            self._latest_jpeg = None
-            self._web_node_ready = None
             self._target_cmd_lock = None
             self._web_reset_evt = None
-        self.web_camera_mode = getattr(args, "web_camera_mode", "third_person")
-        self.web_camera_distance = float(getattr(args, "web_camera_distance", 2.0))
-        self.web_camera_azimuth = float(getattr(args, "web_camera_azimuth", 145.0))
-        self.web_camera_elevation = float(getattr(args, "web_camera_elevation", -28.0))
-        self.web_lookat_offset = np.array(getattr(args, "web_lookat_offset", [0.0, 0.0, 0.35]), dtype=np.float64)
-        self.web_camera = None
 
         self.robot_name = args.robot
         self.task_name = args.task
@@ -99,8 +87,6 @@ class Manipulator:
         self._prepare_mink()
 
         self.reset()
-        if self.web_teleop:
-            self._web_node_ready.set()
 
     def _sim_should_continue(self):
         if self.viewer is not None:
@@ -190,8 +176,6 @@ class Manipulator:
         if t1 > t2:
             self.reset_sig = True
         self.post_step()
-        if self.web_teleop:
-            self._update_web_frame()
 
     def reset(self):
         self.reset_sig = False
@@ -214,8 +198,6 @@ class Manipulator:
                     self.target_quat_wxyz[:] = self._web_cmd_quat
             except Exception:
                 pass
-        if self.web_teleop:
-            self._update_web_camera_lookat()
 
     def close(self):
         self.request_stop()
@@ -404,18 +386,11 @@ class Manipulator:
         self.camera_names = args.camera_names
         self.record_frequency = args.record_frequency or 24
         self.total_record_cnt = 0
-        self.renderer = mujoco.Renderer(self.mj_model) if (self.web_teleop or len(self.camera_names)) else None
+        self.renderer = mujoco.Renderer(self.mj_model) if len(self.camera_names) else None
         if self.renderer:
-            self.img_width = 960 if self.web_teleop else 640
-            self.img_height = 540 if self.web_teleop else 480
+            self.img_width = 640
+            self.img_height = 480
             self._set_renderer_size(self.img_width, self.img_height)
-        if self.web_teleop and not self.camera_names:
-            self.web_camera = mujoco.MjvCamera()
-            self.web_camera.type = mujoco.mjtCamera.mjCAMERA_FREE
-            self.web_camera.distance = self.web_camera_distance
-            self.web_camera.azimuth = self.web_camera_azimuth
-            self.web_camera.elevation = self.web_camera_elevation
-            self._update_web_camera_lookat()
 
         self.task_success = False
         self.obs_lst = []
@@ -492,38 +467,6 @@ class Manipulator:
         mink.move_mocap_to_frame(self.mj_model, self.mj_data, self.mocap_name, "endpoint", "site")
         self.configuration.update(self.mj_data.qpos)
         self.posture_task.set_target_from_configuration(self.configuration)
-    
-    def _update_web_frame(self):
-        import cv2
-
-        if not self.renderer:
-            return
-        if self.camera_names:
-            cam = self.camera_names[0]
-            self.renderer.update_scene(self.mj_data, cam)
-        elif self.web_camera is not None:
-            self.renderer.update_scene(self.mj_data, self.web_camera)
-        else:
-            self.renderer.update_scene(self.mj_data)
-        rgb = self.renderer.render()
-        ok, buf = cv2.imencode(
-            ".jpg",
-            cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
-            [int(cv2.IMWRITE_JPEG_QUALITY), 72],
-        )
-        if ok and self._latest_frame_lock is not None:
-            with self._latest_frame_lock:
-                self._latest_jpeg = buf.tobytes()
-
-    def _update_web_camera_lookat(self):
-        if self.web_camera is None:
-            return
-        try:
-            base = get_site_tmat(self.mj_data, "armbase")
-            lookat = base[:3, 3] + self.web_lookat_offset
-            self.web_camera.lookat[:] = lookat
-        except Exception:
-            pass
 
     def _proc_perturb(self):
         if self.viewer is None:
@@ -753,38 +696,6 @@ def parse_args():
         type=int,
         default=8765,
         help="网页服务端口（仅 --web-teleop 时）",
-    )
-    parser.add_argument(
-        "--web-camera-mode",
-        type=str,
-        default="third_person",
-        choices=["third_person", "named"],
-        help="网页渲染相机模式：third_person=第三人称自由相机；named=使用 --camera-names 指定相机",
-    )
-    parser.add_argument(
-        "--web-camera-distance",
-        type=float,
-        default=2.0,
-        help="第三人称相机距离（仅 --web-camera-mode third_person）",
-    )
-    parser.add_argument(
-        "--web-camera-azimuth",
-        type=float,
-        default=145.0,
-        help="第三人称相机方位角（度）",
-    )
-    parser.add_argument(
-        "--web-camera-elevation",
-        type=float,
-        default=-28.0,
-        help="第三人称相机俯仰角（度）",
-    )
-    parser.add_argument(
-        "--web-lookat-offset",
-        type=float,
-        nargs=3,
-        default=[0.0, 0.0, 0.35],
-        help="第三人称相机注视点相对 armbase 的偏移 xyz（米）",
     )
 
     return parser.parse_args()

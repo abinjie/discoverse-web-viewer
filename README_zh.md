@@ -271,6 +271,52 @@ python3 examples/mocap_ik/mocap_ik_manipulator.py -r arx_l5 -t block_bridge_plac
 - **'Ctrl+g'** - 切换高斯渲染（需安装 gaussian-splatting 并设置 cfg.use_gaussian_renderer = True）
 - **'Ctrl+d'** - 切换深度可视化
 
+### Web Viewer（浏览器遥操作）
+
+该项目提供基于 FastAPI + WebSocket + Three.js 的网页遥操作入口，支持：
+- 360 度自由视角（OrbitControls）
+- 目标点拖拽平移/旋转（TransformControls）
+- 与仿真实时状态同步（`/state`）
+
+#### 1) 安装依赖
+```bash
+conda activate discoverse
+cd /media/binjie/DATA2/Project/DISCOVERSE
+pip install "discoverse[web-teleop]"
+```
+
+#### 2) 启动 Web Viewer
+```bash
+conda activate discoverse
+cd /media/binjie/DATA2/Project/DISCOVERSE
+export MUJOCO_GL=egl
+python examples/web_teleop/web_app.py -r airbot_play
+```
+
+#### 3) 打开页面
+```bash
+# 默认 WebGL 360 视图（推荐）
+http://127.0.0.1:8765/
+```
+
+#### 4) 常用启动参数
+```bash
+# 指定监听地址和端口
+python examples/web_teleop/web_app.py -r airbot_play --web-host 0.0.0.0 --web-port 8765
+```
+
+#### 5) 常用排查命令
+```bash
+# 1) 前端是否持续拿到状态
+curl "http://127.0.0.1:8765/state"
+
+# 2) 机械臂 mesh 资源是否可访问（200 为正常）
+curl -I "http://127.0.0.1:8765/models/meshes/airbot_play/link1.obj"
+
+# 3) 强制刷新浏览器缓存（在浏览器中）
+# Ctrl + Shift + R
+```
+
 ## 🎓 学习与训练
 
 ### 模仿学习快速开始

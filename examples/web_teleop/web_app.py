@@ -32,7 +32,7 @@ if _MOCAP_IK_DIR not in sys.path:
     sys.path.insert(0, _MOCAP_IK_DIR)
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import numpy as np
 import uvicorn
@@ -94,15 +94,6 @@ async def index():
     return HTMLResponse("<p>Missing static/webgl.html</p>", status_code=500)
 
 
-@app.get("/mjpeg")
-async def mjpeg_page():
-    index_path = os.path.join(_STATIC, "index.html")
-    if os.path.isfile(index_path):
-        with open(index_path, "r", encoding="utf-8") as f:
-            return HTMLResponse(f.read())
-    return HTMLResponse("<p>Missing static/index.html</p>", status_code=500)
-
-
 @app.get("/state")
 async def get_state():
     node = STATE.get("node")
@@ -118,44 +109,6 @@ async def get_state():
         "target_pos": obs["action"][:3],
         "target_quat": obs["action"][3:7],
     }
-
-
-@app.get("/video.mjpeg")
-async def video_mjpeg():
-    async def gen():
-        boundary = b"frame"
-        while True:
-            node = STATE.get("node")
-            if node is None or node._latest_frame_lock is None:
-                await asyncio.sleep(0.05)
-                continue
-            with node._latest_frame_lock:
-                jpg = node._latest_jpeg
-            if not jpg:
-                await asyncio.sleep(0.02)
-                continue
-            yield (
-                b"--" + boundary + b"\r\n"
-                b"Content-Type: image/jpeg\r\n"
-                b"Content-Length: " + str(len(jpg)).encode("ascii") + b"\r\n"
-                b"Cache-Control: no-cache\r\n"
-                b"Pragma: no-cache\r\n"
-                b"Expires: 0\r\n\r\n"
-                + jpg
-                + b"\r\n"
-            )
-            await asyncio.sleep(1.0 / 24.0)
-
-    return StreamingResponse(
-        gen(),
-        media_type="multipart/x-mixed-replace; boundary=frame",
-        headers={
-            "Cache-Control": "no-cache, no-store, must-revalidate",
-            "Pragma": "no-cache",
-            "Expires": "0",
-            "X-Accel-Buffering": "no",
-        },
-    )
 
 
 @app.websocket("/ws")

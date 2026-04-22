@@ -266,6 +266,52 @@ python3 examples/mocap_ik/mocap_ik_manipulator.py -r arx_l5 -t block_bridge_plac
 - **'Ctrl+g'** - Toggle Gaussian rendering (requires `gaussian-splatting` installation and `cfg.use_gaussian_renderer = True`)
 - **'Ctrl+d'** - Toggle depth visualization
 
+### Web Viewer (Browser Teleoperation)
+
+This project includes a FastAPI + WebSocket + Three.js based web teleoperation entrypoint with:
+- 360-degree free camera orbit (OrbitControls)
+- target translate/rotate dragging (TransformControls)
+- real-time simulation state sync (`/state`)
+
+#### 1) Install dependencies
+```bash
+conda activate discoverse
+cd /media/binjie/DATA2/Project/DISCOVERSE
+pip install "discoverse[web-teleop]"
+```
+
+#### 2) Start Web Viewer
+```bash
+conda activate discoverse
+cd /media/binjie/DATA2/Project/DISCOVERSE
+export MUJOCO_GL=egl
+python examples/web_teleop/web_app.py -r airbot_play
+```
+
+#### 3) Open pages
+```bash
+# default WebGL 360 view (recommended)
+http://127.0.0.1:8765/
+```
+
+#### 4) Common launch options
+```bash
+# custom host/port
+python examples/web_teleop/web_app.py -r airbot_play --web-host 0.0.0.0 --web-port 8765
+```
+
+#### 5) Quick diagnostics
+```bash
+# 1) check state endpoint updates
+curl "http://127.0.0.1:8765/state"
+
+# 2) check mesh static files (200 means ok)
+curl -I "http://127.0.0.1:8765/models/meshes/airbot_play/link1.obj"
+
+# 3) force browser hard refresh
+# Ctrl + Shift + R
+```
+
 
 ## 🎓 Learning & Training
 
