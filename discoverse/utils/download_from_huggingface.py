@@ -110,7 +110,7 @@ def check_hf_login_or_exit(verbose=True):
         return True
     except Exception as e:
         if verbose:
-            print("检测到未登录 Hugging Face。请执行 `huggingface-cli login` 或 设置 环境变量 `HUGGINGFACE_HUB_TOKEN` 后重试。")
+            print("检测到未登录 Hugging Face。请执行 `hf auth login`（或旧版 `huggingface-cli login`，可能已弃用），或设置环境变量 `HUGGINGFACE_HUB_TOKEN` 后重试。")
             print(f"(详细错误: {e})")
         sys.exit(1)
     except Exception as e:
