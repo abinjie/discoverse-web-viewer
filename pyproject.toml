@@ -150,10 +150,12 @@ visualization = [
     "imageio-ffmpeg>=0.4.9",
 ]
 
-# 本机网页遥操作（FastAPI + MJPEG）
+# 本机网页遥操作（FastAPI + MJPEG；复用 mocap_ik_manipulator，需 mink IK + PyAV 录制链）
 web-teleop = [
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.27.0",
+    "mink>=1.0.0",
+    "av>=10.0.0",
 ]
 
 # 开发和测试工具
