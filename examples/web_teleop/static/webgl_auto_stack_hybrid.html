@@ -21,7 +21,7 @@
     <div id="view"></div>
     <div id="panel">
       <h3 style="margin: 0 0 8px 0;">环境 3DGS + Mesh 机械臂</h3>
-      <div class="row">与 <code>stack_block.py</code> 的 <code>gs_model_dict</code> 对齐的环境 ply（不含三色方块）</div>
+      <div class="row">默认只加载 lab3 背景 ply；抽屉/碗加 <code>?extras=1</code>（与 <code>gs_model_dict</code> 全量）</div>
       <div class="row">方块与机械臂：OBJ mesh + <code>/state</code></div>
       <div class="row">仿真时间：<span id="time">-</span></div>
       <div id="status">初始化...</div>
@@ -30,7 +30,7 @@
         - 浏览器侧使用 <a href="https://github.com/mkkellogg/GaussianSplats3D" target="_blank" rel="noopener">GaussianSplats3D</a>（WebGL splat），与 Python CUDA <code>gaussian_renderer</code> 不完全像素一致。<br />
         - 环境 ply：小体积用 <code>*.gs3d.ply</code>（脚本头补丁），高质量用 <code>*.webgs.ply</code>；勿直接用无补丁的 HF <code>point_cloud.ply</code>（GaussianSplats3D 会黑屏）。<br />
         - <code>python examples/web_teleop/download_gs_assets_for_web.py --convert-only</code> 可生成 gs3d + webgs。<br />
-        - 单独预览任意 ply：<a href="/gs">/gs</a> 或 <code>/gs?ply=/models/3dgs/...</code><br />
+        - 单独预览：<a href="/gs">/gs</a>。混合页可选 <code>?extras=1</code>（多 ply）或 <code>?splats=url1,url2</code>。<br />
         - <a href="/">返回纯 mesh 页面</a>
       </div>
     </div>
@@ -55,13 +55,25 @@
     const statusEl = document.getElementById("status");
     const timeEl = document.getElementById("time");
 
-    /** 与 examples/tasks_airbot_play/stack_block.py 中 gs_model_dict 一致；不包含 block_green（方块用 mesh） */
-    const ENV_SPLAT_URLS = [
+    /** stack_block gs_model_dict 全量列表；浏览器默认只叠 lab3，避免不必要加载与大场景错位 */
+    const ENV_SPLATS_FULL = [
       "/models/3dgs/scene/lab3/point_cloud.gs3d.ply",
       "/models/3dgs/hinge/drawer_1.webgs.ply",
       "/models/3dgs/hinge/drawer_2.webgs.ply",
       "/models/3dgs/object/bowl_pink.webgs.ply",
     ];
+
+    function resolveEnvSplatUrls() {
+      const q = new URLSearchParams(location.search);
+      const csv = (q.get("splats") || "").trim();
+      if (csv) {
+        return csv.split(",").map((s) => s.trim()).filter(Boolean);
+      }
+      if (q.get("extras") === "1" || q.get("full") === "1") return [...ENV_SPLATS_FULL];
+      return [ENV_SPLATS_FULL[0]];
+    }
+
+    let ENV_SPLAT_URLS = resolveEnvSplatUrls();
 
     THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
     const scene = new THREE.Scene();
@@ -109,11 +121,17 @@
     };
     for (const b in blocks) {
       blocks[b].position.set(0, 0, -10);
-      scene.add(blocks[b]);
     }
 
+    /** 与 MuJoCo 世界对齐：方块 + 臂架按 arm_base 世界位姿组装（与高斯 ply 同源世界系） */
+    const simArmAttach = new THREE.Group();
+    scene.add(simArmAttach);
+
     const meshRoot = new THREE.Group();
-    scene.add(meshRoot);
+    simArmAttach.add(meshRoot);
+    for (const b in blocks) {
+      simArmAttach.add(blocks[b]);
+    }
 
     const objLoader = new OBJLoader();
     const meshMatDark = new THREE.MeshStandardMaterial({ color: 0x2a2e39, metalness: 0.25, roughness: 0.65 });
@@ -259,6 +277,12 @@
         if (leftSlideJoint) leftSlideJoint.position.y = Math.max(0.0, Math.min(0.04, gripper));
         if (rightSlideJoint) rightSlideJoint.position.y = Math.max(-0.04, Math.min(0.0, -gripper));
 
+        if (j.arm_base_world) {
+          const ab = j.arm_base_world.pos;
+          const aq = j.arm_base_world.quat_wxyz;
+          simArmAttach.position.set(ab[0], ab[1], ab[2]);
+          simArmAttach.quaternion.copy(fromWxyz(aq));
+        }
         if (j.blocks) {
           for (const b in j.blocks) {
             if (blocks[b]) {

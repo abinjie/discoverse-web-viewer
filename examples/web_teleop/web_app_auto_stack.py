@@ -296,12 +296,24 @@ async def get_state():
         quat_xyzw = Rotation.from_matrix(tmat_local[:3, :3]).as_quat()
         quat_wxyz = [quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]]
         blocks[b] = {"pos": pos, "quat_wxyz": quat_wxyz}
-        
+
+    quat_xyzw_ab = Rotation.from_matrix(tmat_armbase[:3, :3]).as_quat()
+    arm_base_world = {
+        "pos": tmat_armbase[:3, 3].tolist(),
+        "quat_wxyz": [
+            quat_xyzw_ab[3],
+            quat_xyzw_ab[0],
+            quat_xyzw_ab[1],
+            quat_xyzw_ab[2],
+        ],
+    }
+
     return {
         "ok": True,
         "time": float(node.mj_data.time),
         "jq": jq,
-        "blocks": blocks
+        "blocks": blocks,
+        "arm_base_world": arm_base_world,
     }
 
 
