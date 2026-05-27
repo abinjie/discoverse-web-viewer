@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>3DGS PLY 浏览器预览</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; background: #0e1424; color: #d7defc; }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    #view { width: 100%; height: 100%; }
+    #bar {
+      position: fixed; left: 12px; bottom: 12px; right: 12px; max-width: 560px;
+      background: rgba(28, 35, 58, 0.92); padding: 10px 14px; border-radius: 8px;
+      font-size: 13px; line-height: 1.45; border: 1px solid #2d3552;
+    }
+    #bar code { font-size: 12px; word-break: break-all; }
+    a { color: #9db0ff; }
+    input { width: 100%; margin-top: 6px; padding: 6px 8px; border-radius: 6px; border: 1px solid #3d4a72; background: #151b2e; color: #e8ecff; box-sizing: border-box; }
+    button { margin-top: 8px; padding: 6px 12px; border-radius: 6px; border: none; background: #4a6cf7; color: #fff; cursor: pointer; }
+    button:hover { filter: brightness(1.08); }
+  </style>
+</head>
+<body>
+  <div id="view"></div>
+  <div id="bar">
+    <strong>3D Gaussian Splatting（浏览器）</strong><br />
+    当前：<code id="cur"></code><br />
+    <label>PLY URL（HF 压缩 ply 请用 <code>*.gs3d.ply</code> 或 <code>*.webgs.ply</code>；见下方说明）</label>
+    <input id="urlIn" type="text" placeholder="/models/3dgs/..." />
+    <button type="button" id="reloadBtn">加载</button>
+    <div style="margin-top:8px;font-size:12px;color:#7f8cc2;">
+      <strong>压缩 ply（~5MB）</strong>：原版 <code>point_cloud.ply</code> 无 <code>sh</code> 块时 GaussianSplats3D 会解析失败 → 黑屏。运行 <code>python examples/web_teleop/patch_compressed_ply_for_gs3d.py …</code> 或 <code>download_gs_assets_for_web.py</code> 生成 <code>*.gs3d.ply</code>（仅头补丁，体积极小）。<br />
+      <strong>标准 ply（~55MB）</strong>：<code>*.webgs.ply</code> 由脚本用 <code>gaussian_renderer</code> 解码导出；服务端 gzip 后约 ~15MB。<br />
+      <code>*.gs3d.ply</code> 需<strong>最新服务端</strong>（否则 gzip 分块无 Content-Length，进度无百分比）；解析 ~35 万高斯时底部状态会出现「解析/构建」，可能需十余秒。<br />
+      使用 <a href="https://github.com/mmkellogg/GaussianSplats3D" target="_blank" rel="noopener">GaussianSplats3D</a>。示例：<code>?ply=/models/3dgs/scene/lab3/point_cloud.gs3d.ply</code> · <a href="/hybrid">混合场景</a> · <a href="/">首页</a>
+    </div>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+        "@mkkellogg/gaussian-splats-3d": "https://unpkg.com/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { Viewer } from "@mkkellogg/gaussian-splats-3d";
+
+    const view = document.getElementById("view");
+    const curEl = document.getElementById("cur");
+    const urlIn = document.getElementById("urlIn");
+    const reloadBtn = document.getElementById("reloadBtn");
+
+    const params = new URLSearchParams(location.search);
+    const defaultPly = "/models/3dgs/scene/lab3/point_cloud.gs3d.ply";
+    let plyUrl = (params.get("ply") || defaultPly).trim();
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0e1424);
+    const hemi = new THREE.HemisphereLight(0xeaf1ff, 0x4a5f86, 0.35);
+    scene.add(hemi);
+    scene.add(new THREE.AmbientLight(0xaec0e6, 0.22));
+
+    const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 5000);
+    camera.up.set(0, 0, 1);
+    camera.position.set(2, -2, 1.5);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.2;
+    view.appendChild(renderer.domElement);
+
+    let viewer = null;
+
+    function resize() {
+      const w = view.clientWidth;
+      const h = view.clientHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+      if (viewer && viewer.forceRenderNextFrame) viewer.forceRenderNextFrame();
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
+    async function loadPly(url) {
+      if (viewer) {
+        try {
+          await viewer.dispose();
+        } catch (_) {}
+        viewer = null;
+      }
+
+      curEl.textContent = url + "（检查中…）";
+      urlIn.value = url;
+
+      let meta = null;
+      try {
+        meta = await fetch(url, { method: "HEAD", cache: "no-store" });
+      } catch (e) {
+        curEl.textContent = "请求失败: " + url + " — " + e;
+        return;
+      }
+      if (meta.status === 404 || meta.status === 403) {
+        curEl.innerHTML =
+          '<span style="color:#ff9b9b">' +
+          meta.status +
+          "：服务器上还没有该 ply。</span><br/>" +
+          '在<strong>仓库根目录</strong>执行：<br/>' +
+          '<code style="user-select:all;display:block;margin:6px 0;font-size:11px;">' +
+          "python examples/web_teleop/download_gs_assets_for_web.py</code>（生成 <code>*.gs3d.ply</code> / <code>*.webgs.ply</code>）或<code style=\"user-select:all;display:block;margin:6px 0;font-size:11px;\">" +
+          "python examples/web_teleop/patch_compressed_ply_for_gs3d.py models/3dgs/scene/lab3/point_cloud.ply</code><br/>" +
+          "需已配置 Hugging Face（<code>hf auth login</code>，或设置 <code>HUGGINGFACE_HUB_TOKEN</code>）。文件应落在：<code>models/3dgs/...</code>";
+        return;
+      }
+      if (!meta.ok && meta.status !== 405) {
+        curEl.textContent = `HEAD ${meta.status}，继续尝试加载…`;
+      }
+
+      curEl.textContent = url;
+
+      viewer = new Viewer({
+        rootElement: view,
+        threeScene: scene,
+        camera,
+        renderer,
+        useBuiltInControls: true,
+        cameraUp: [0, 0, 1],
+        initialCameraPosition: [2, -2, 1.5],
+        initialCameraLookAt: [0, 0, 0.5],
+        sharedMemoryForWorkers: false,
+        gpuAcceleratedSort: false,
+        sphericalHarmonicsDegree: 2,
+      });
+
+      await viewer.addSplatScene(url, {
+        splatAlphaRemovalThreshold: 0,
+        showLoadingUI: true,
+        position: [0, 0, 0],
+        rotation: [0, 0, 0, 1],
+        scale: [1, 1, 1],
+        headers: { "Cache-Control": "no-store", Pragma: "no-cache" },
+        onProgress: (pct, pctLabel, loaderStatus) => {
+          let phase = "";
+          if (loaderStatus === 0) phase = "下载";
+          else if (loaderStatus === 1) phase = "解析/构建";
+          else if (loaderStatus === 2) phase = "完成";
+          else phase = String(loaderStatus);
+          const tail = pctLabel || (pct != null && !Number.isNaN(pct) ? ` ${Number(pct).toFixed(1)}%` : "");
+          curEl.textContent = `${url}（${phase}${tail}）`;
+        },
+      });
+      curEl.textContent = url + "（已加载，可拖拽旋转）";
+      viewer.start();
+    }
+
+    reloadBtn.addEventListener("click", () => {
+      const u = urlIn.value.trim();
+      if (!u) return;
+      plyUrl = u;
+      const q = new URLSearchParams();
+      q.set("ply", plyUrl);
+      history.replaceState({}, "", `${location.pathname}?${q.toString()}`);
+      loadPly(plyUrl).catch((e) => {
+        console.error(e);
+        curEl.textContent = "加载失败: " + e;
+      });
+    });
+
+    loadPly(plyUrl).catch((e) => {
+      console.error(e);
+      curEl.textContent = "加载失败（检查路径与 models/3dgs 是否存在）: " + e;
+    });
+  </script>
+</body>
+</html>

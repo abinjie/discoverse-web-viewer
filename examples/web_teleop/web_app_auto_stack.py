@@ -12,6 +12,9 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import MutableHeaders
+from starlette.middleware.gzip import GZipMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 _TASKS_DIR = os.path.join(_REPO_ROOT, "examples", "tasks_airbot_play")
@@ -30,6 +33,11 @@ def _run_sim(args) -> None:
     cfg.headless = True
     cfg.sync = True
     cfg.render_set["fps"] = 30
+    # Web teleop 仅需要关节/物体状态，不需要离屏图像；关闭渲染可显著减轻 CPU/GPU 负担
+    cfg.enable_render = False
+    cfg.obs_rgb_cam_id = []
+    cfg.obs_depth_cam_id = []
+    cfg.use_gaussian_renderer = False
     
     sim_node = SimNode(cfg)
     STATE["node"] = sim_node
@@ -47,6 +55,7 @@ def _run_sim(args) -> None:
     sim_node.reset()
     try:
         while sim_node.running:
+            step_start_wall = time.perf_counter()
             if sim_node.reset_sig:
                 sim_node.reset_sig = False
                 stm.reset()
@@ -139,8 +148,9 @@ def _run_sim(args) -> None:
             if stm.state_idx >= stm.max_state_cnt:
                 sim_node.reset()
             
-            # 控制帧率
-            time.sleep(max(0, 1.0/30.0 - sim_node.delta_t))
+            # 按仿真步长对齐墙钟时间：避免固定 30Hz 导致仿真时间天然慢一半
+            elapsed = time.perf_counter() - step_start_wall
+            time.sleep(max(0.0, float(sim_node.delta_t) - elapsed))
             
     finally:
         STATE["node"] = None
@@ -159,6 +169,81 @@ async def lifespan(app: FastAPI):
         node.running = False
     t.join(timeout=12.0)
 
+
+class DisablePathSendForModelsMiddleware:
+    """pathsend 响应不会经过 GZipMiddleware（Starlette 直接放行），大 ply 仍是原始字节。
+
+    仅对 /models/ 关闭 pathsend，让 FileResponse 走分块读取，gzip 才能生效。
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            path = scope.get("path") or ""
+            ext = scope.get("extensions") or {}
+            if path.startswith("/models/") and "http.response.pathsend" in ext:
+                scope = dict(scope)
+                scope["extensions"] = {k: v for k, v in ext.items() if k != "http.response.pathsend"}
+        await self.app(scope, receive, send)
+
+
+def _strip_gzip_from_accept_encoding(raw_headers: list) -> list:
+    """从 Accept-Encoding 去掉 gzip，避免 GZipMiddleware 使用分块 gzip（无 Content-Length）。"""
+    out: list = []
+    for name, value in raw_headers:
+        if name.lower() != b"accept-encoding":
+            out.append((name, value))
+            continue
+        enc = value.decode("latin1")
+        parts = [p.strip() for p in enc.split(",") if p.strip().lower() != "gzip"]
+        if parts:
+            out.append((name, ", ".join(parts).encode("latin1")))
+    return out
+
+
+class StripGzipAcceptForGs3dPlyMiddleware:
+    """小体积 *.gs3d.ply 不需要 gzip；分块 gzip 会丢失 Content-Length，GaussianSplats3D 进度无百分比且像卡住。"""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            path = scope.get("path") or ""
+            if path.endswith(".gs3d.ply"):
+                scope = dict(scope)
+                scope["headers"] = _strip_gzip_from_accept_encoding(list(scope["headers"]))
+        await self.app(scope, receive, send)
+
+
+class NoCacheModelsPlyMiddleware:
+    """PLY 体积大且调试频繁：禁用缓存，避免 304 + 旧字节导致解析异常或「看似卡住」。"""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path") or ""
+        if not (path.startswith("/models/") and path.endswith(".ply")):
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                h = MutableHeaders(scope=message)
+                h["cache-control"] = "no-store, max-age=0, must-revalidate"
+                if "etag" in h:
+                    del h["etag"]
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
 app = FastAPI(lifespan=lifespan)
 
 _STATIC = os.path.join(os.path.dirname(__file__), "static")
@@ -175,6 +260,27 @@ async def index():
         with open(index_path, "r", encoding="utf-8") as f:
             return HTMLResponse(f.read())
     return HTMLResponse("<p>Missing static/webgl_auto_stack.html</p>", status_code=500)
+
+
+@app.get("/hybrid")
+async def hybrid():
+    """环境 3DGS（ply）+ 机械臂/方块 mesh，与 stack_block gs_model_dict 对齐（不含方块 ply）。"""
+    path = os.path.join(_STATIC, "webgl_auto_stack_hybrid.html")
+    if os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    return HTMLResponse("<p>Missing static/webgl_auto_stack_hybrid.html</p>", status_code=500)
+
+
+@app.get("/gs")
+async def gs_ply_viewer():
+    """仅浏览器预览 3DGS PLY；可选查询参数 ?ply=/models/3dgs/..."""
+    path = os.path.join(_STATIC, "gs_ply_viewer.html")
+    if os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    return HTMLResponse("<p>Missing static/gs_ply_viewer.html</p>", status_code=500)
+
 
 @app.get("/state")
 async def get_state():
@@ -197,13 +303,36 @@ async def get_state():
         quat_xyzw = Rotation.from_matrix(tmat_local[:3, :3]).as_quat()
         quat_wxyz = [quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]]
         blocks[b] = {"pos": pos, "quat_wxyz": quat_wxyz}
-        
+
+    quat_xyzw_ab = Rotation.from_matrix(tmat_armbase[:3, :3]).as_quat()
+    arm_base_world = {
+        "pos": tmat_armbase[:3, 3].tolist(),
+        "quat_wxyz": [
+            quat_xyzw_ab[3],
+            quat_xyzw_ab[0],
+            quat_xyzw_ab[1],
+            quat_xyzw_ab[2],
+        ],
+    }
+
     return {
         "ok": True,
         "time": float(node.mj_data.time),
         "jq": jq,
-        "blocks": blocks
+        "blocks": blocks,
+        "arm_base_world": arm_base_world,
     }
+
+
+# 外层禁止 ply 缓存；内层 gzip + pathsend + *.gs3d.ply 剥 gzip 请求（保留 Content-Length）
+asgi_app = NoCacheModelsPlyMiddleware(
+    GZipMiddleware(
+        StripGzipAcceptForGs3dPlyMiddleware(DisablePathSendForModelsMiddleware(app)),
+        minimum_size=500,
+        compresslevel=6,
+    )
+)
+
 
 def main():
     import argparse
@@ -212,7 +341,7 @@ def main():
     parser.add_argument("--web-port", type=int, default=8765)
     args = parser.parse_args()
     
-    uvicorn.run(app, host=args.web_host, port=args.web_port, log_level="info")
+    uvicorn.run(asgi_app, host=args.web_host, port=args.web_port, log_level="info")
 
 if __name__ == "__main__":
     main()
