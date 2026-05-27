@@ -33,6 +33,11 @@ def _run_sim(args) -> None:
     cfg.headless = True
     cfg.sync = True
     cfg.render_set["fps"] = 30
+    # Web teleop 仅需要关节/物体状态，不需要离屏图像；关闭渲染可显著减轻 CPU/GPU 负担
+    cfg.enable_render = False
+    cfg.obs_rgb_cam_id = []
+    cfg.obs_depth_cam_id = []
+    cfg.use_gaussian_renderer = False
     
     sim_node = SimNode(cfg)
     STATE["node"] = sim_node
@@ -50,6 +55,7 @@ def _run_sim(args) -> None:
     sim_node.reset()
     try:
         while sim_node.running:
+            step_start_wall = time.perf_counter()
             if sim_node.reset_sig:
                 sim_node.reset_sig = False
                 stm.reset()
@@ -142,8 +148,9 @@ def _run_sim(args) -> None:
             if stm.state_idx >= stm.max_state_cnt:
                 sim_node.reset()
             
-            # 控制帧率
-            time.sleep(max(0, 1.0/30.0 - sim_node.delta_t))
+            # 按仿真步长对齐墙钟时间：避免固定 30Hz 导致仿真时间天然慢一半
+            elapsed = time.perf_counter() - step_start_wall
+            time.sleep(max(0.0, float(sim_node.delta_t) - elapsed))
             
     finally:
         STATE["node"] = None
