@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DISCOVERSE Web Viewer — 解耦机器人渲染</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; background: #111527; color: #d7defc; }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    #root { display: grid; grid-template-columns: 1fr 320px; height: 100%; min-height: 0; }
+    #view { position: relative; overflow: hidden; min-height: 0; height: 100%; }
+    #view > canvas {
+      display: block;
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+    }
+    #panel { background: #1c233a; padding: 14px; border-left: 1px solid #2d3552; }
+    .row { margin: 8px 0; font-size: 13px; color: #9db0ff; }
+    .tip { color: #7f8cc2; font-size: 12px; line-height: 1.5; margin-top: 12px; }
+    #status { color: #86e1b3; font-size: 12px; margin-top: 8px; }
+    a { color: #9db0ff; }
+    #arm_cam_label {
+      position: absolute;
+      right: max(14px, 2%);
+      bottom: calc(max(14px, 2%) + 21vh + 6px);
+      font-size: 11px;
+      color: rgba(215, 222, 252, 0.85);
+      text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+      pointer-events: none;
+      z-index: 3;
+      padding: 3px 6px;
+      border-radius: 4px;
+      background: rgba(22, 32, 58, 0.72);
+      border: 1px solid rgba(99, 120, 183, 0.45);
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div id="view">
+      <div id="arm_cam_label">腕部相机 · <span id="pip_camera_name">eye_arm</span></div>
+    </div>
+    <div id="panel">
+      <h3 style="margin: 0 0 8px 0;">环境 3DGS + 可插拔机械臂</h3>
+      <div class="row">机器人：<span id="robot_name">-</span></div>
+      <div class="row">环境：浏览器 3DGS；机械臂/物体：Three.js mesh</div>
+      <div class="row">状态接口：<code>/api/state</code>（兼容 <code>/state</code>）</div>
+      <div class="row">仿真时间：<span id="time">-</span></div>
+      <div id="status">初始化...</div>
+      <div class="tip">
+        说明：<br />
+        - 浏览器渲染核心与机械臂模型已拆开；新机械臂通过 robot renderer 接入。<br />
+        - 默认只加载 lab3 背景 ply；抽屉/碗加 <code>?extras=1</code> 或 <code>?full=1</code>。<br />
+        - 可用 <code>?splats=url1,url2</code> 覆盖环境 ply。<br />
+        - 可用 <code>?robot=airbot_play</code> 选择机器人；当前实现包含 Airbot Play。<br />
+        - 右下角小窗来自机器人 renderer 暴露的腕部相机。
+      </div>
+    </div>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+        "@mkkellogg/gaussian-splats-3d": "https://unpkg.com/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js"
+      }
+    }
+  </script>
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

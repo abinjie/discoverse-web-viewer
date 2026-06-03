@@ -1,0 +1,1 @@
+"""Decoupled DISCOVERSE browser viewer."""

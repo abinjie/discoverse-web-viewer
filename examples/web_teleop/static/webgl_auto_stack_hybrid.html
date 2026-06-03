@@ -7,18 +7,42 @@
   <style>
     :root { font-family: system-ui, sans-serif; background: #111527; color: #d7defc; }
     html, body { margin: 0; height: 100%; overflow: hidden; }
-    #root { display: grid; grid-template-columns: 1fr 320px; height: 100%; }
-    #view { position: relative; }
+    #root { display: grid; grid-template-columns: 1fr 320px; height: 100%; min-height: 0; }
+    #view { position: relative; overflow: hidden; min-height: 0; height: 100%; }
+    #view > canvas {
+      display: block;
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+    }
     #panel { background: #1c233a; padding: 14px; border-left: 1px solid #2d3552; }
     .row { margin: 8px 0; font-size: 13px; color: #9db0ff; }
     .tip { color: #7f8cc2; font-size: 12px; line-height: 1.5; margin-top: 12px; }
     #status { color: #86e1b3; font-size: 12px; margin-top: 8px; }
     a { color: #9db0ff; }
+    #arm_cam_label {
+      position: absolute;
+      right: max(14px, 2%);
+      bottom: calc(max(14px, 2%) + 21vh + 6px);
+      font-size: 11px;
+      color: rgba(215, 222, 252, 0.85);
+      text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+      pointer-events: none;
+      z-index: 3;
+      padding: 3px 6px;
+      border-radius: 4px;
+      background: rgba(22, 32, 58, 0.72);
+      border: 1px solid rgba(99, 120, 183, 0.45);
+    }
   </style>
 </head>
 <body>
   <div id="root">
-    <div id="view"></div>
+    <div id="view">
+      <div id="arm_cam_label">腕部相机 · eye_arm</div>
+    </div>
     <div id="panel">
       <h3 style="margin: 0 0 8px 0;">环境 3DGS + Mesh 机械臂</h3>
       <div class="row">默认只加载 lab3 背景 ply；抽屉/碗加 <code>?extras=1</code>（与 <code>gs_model_dict</code> 全量）</div>
@@ -30,6 +54,7 @@
         - 浏览器侧使用 <a href="https://github.com/mkkellogg/GaussianSplats3D" target="_blank" rel="noopener">GaussianSplats3D</a>（WebGL splat），与 Python CUDA <code>gaussian_renderer</code> 不完全像素一致。<br />
         - 环境 ply：小体积用 <code>*.gs3d.ply</code>（脚本头补丁），高质量用 <code>*.webgs.ply</code>；勿直接用无补丁的 HF <code>point_cloud.ply</code>（GaussianSplats3D 会黑屏）。<br />
         - <code>python examples/web_teleop/download_gs_assets_for_web.py --convert-only</code> 可生成 gs3d + webgs。<br />
+        - 右下角小窗：机械臂腕部相机（MuJoCo eye_arm）第一视角，含 3DGS 环境（约 8Hz 更新）。<br />
         - 单独预览：<a href="/gs">/gs</a>。混合页可选 <code>?extras=1</code>（多 ply）或 <code>?splats=url1,url2</code>。<br />
         - <a href="/">返回纯 mesh 页面</a>
       </div>
@@ -89,6 +114,44 @@
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.25;
     view.appendChild(renderer.domElement);
+
+    // 与 MuJoCo airbot_play.xml 中 eye_arm 一致：挂载在 link6 子 body 上
+    const ARM_RT_W = 320;
+    const ARM_RT_H = 240;
+    const armRt = new THREE.WebGLRenderTarget(ARM_RT_W, ARM_RT_H, { depthBuffer: true });
+    armRt.texture.colorSpace = THREE.SRGBColorSpace;
+
+    const hudCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 40);
+    hudCam.position.set(0, 0, 10);
+    const hudScene = new THREE.Scene();
+    const hudMat = new THREE.MeshBasicMaterial({
+      map: armRt.texture,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const hudW = 0.56;
+    const hudH = 0.42;
+    const margin = 0.04;
+    const hudX = 1 - margin - hudW / 2;
+    const hudY = -1 + margin + hudH / 2;
+
+    const hudPlane = new THREE.Mesh(new THREE.PlaneGeometry(hudW, hudH), hudMat);
+    hudPlane.position.set(hudX, hudY, 0);
+    hudPlane.renderOrder = 99999;
+    hudScene.add(hudPlane);
+
+    const frameGeo = new THREE.PlaneGeometry(hudW + 0.012, hudH + 0.012);
+    const frameMat = new THREE.MeshBasicMaterial({
+      color: 0x6378b7,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const hudFrame = new THREE.Mesh(frameGeo, frameMat);
+    hudFrame.position.set(hudX, hudY, -0.001);
+    hudFrame.renderOrder = 99998;
+    hudScene.add(hudFrame);
 
     const hemi = new THREE.HemisphereLight(0xeaf1ff, 0x4a5f86, 0.35);
     scene.add(hemi);
@@ -247,17 +310,156 @@
       link6.add(rightSlide);
       rightSlide.add(cloneWithMaterial(libs.left, meshMatLight));
 
+      // eye_arm：models/mjcf/manipulator/airbot_play/airbot_play.xml
+      const armCamBody = new THREE.Group();
+      link6.add(armCamBody);
+      armCamBody.position.set(-0.105, 0, -0.12);
+      armCamBody.rotation.order = "XYZ";
+      armCamBody.rotation.set(Math.PI, 0, Math.PI / 2);
+      const armCamera = new THREE.PerspectiveCamera(
+        72.5376526571421,
+        ARM_RT_W / ARM_RT_H,
+        0.02,
+        20
+      );
+      armCamera.up.set(0, 0, 1);
+      armCamera.rotation.order = "XYZ";
+      armCamera.rotation.x = -0.5236;
+      armCamBody.add(armCamera);
+
       return {
         armJoints: [j1Rot, j2Rot, j3Rot, j4Rot, j5Rot, j6Rot],
         leftSlide,
         rightSlide,
+        armCamera,
       };
     }
 
     let armJointRotators = [];
     let leftSlideJoint = null;
     let rightSlideJoint = null;
+    let armCamera = null;
     let viewer = null;
+    let meshOnlyOrbit = null;
+    let armCamBusy = false;
+    let lastArmCamUpdate = 0;
+    const ARM_CAM_UPDATE_MS = 120;
+
+    function hasVisibleChildren(obj) {
+      for (const child of obj.children) {
+        if (child.visible) return true;
+      }
+      return false;
+    }
+
+    async function waitViewerSort() {
+      if (viewer?.sortPromise) {
+        try {
+          await viewer.sortPromise;
+        } catch (_) {
+          /* ignore */
+        }
+      }
+    }
+
+    async function updateArmCamPiP() {
+      if (!viewer?.initialized || !viewer.splatRenderReady || !armCamera || armCamBusy) return;
+      armCamBusy = true;
+      const mainCam = viewer.camera;
+      const savedRt = renderer.getRenderTarget();
+      const savedAutoClear = renderer.autoClear;
+
+      try {
+        viewer.camera = armCamera;
+        armCamera.aspect = ARM_RT_W / ARM_RT_H;
+        armCamera.updateProjectionMatrix();
+        armCamera.updateMatrixWorld(true);
+
+        await waitViewerSort();
+        await viewer.runSplatSort(true, true);
+        await waitViewerSort();
+
+        const splatMesh = viewer.splatMesh;
+        if (splatMesh && splatMesh.getSplatCount() > 0) {
+          splatMesh.updateTransforms();
+          const pr = viewer.devicePixelRatio || renderer.getPixelRatio();
+          const fa = viewer.focalAdjustment ?? 1;
+          const flx = armCamera.projectionMatrix.elements[0] * 0.5 * pr * ARM_RT_W;
+          const fly = armCamera.projectionMatrix.elements[5] * 0.5 * pr * ARM_RT_H;
+          splatMesh.updateUniforms(
+            new THREE.Vector2(ARM_RT_W, ARM_RT_H),
+            flx * fa,
+            fly * fa,
+            false,
+            1.0,
+            1.0 / fa
+          );
+        }
+
+        renderer.setRenderTarget(armRt);
+        renderer.autoClear = true;
+        renderer.setClearColor(scene.background);
+        renderer.clear();
+
+        if (hasVisibleChildren(scene)) {
+          renderer.render(scene, armCamera);
+          renderer.autoClear = false;
+        }
+        if (splatMesh && splatMesh.getSplatCount() > 0) {
+          renderer.render(splatMesh, armCamera);
+        }
+
+        viewer.camera = mainCam;
+        await waitViewerSort();
+        await viewer.runSplatSort(true, true);
+        await waitViewerSort();
+        viewer.updateSplatMesh();
+      } catch (err) {
+        console.warn("腕部相机 GS 渲染失败:", err);
+        viewer.camera = mainCam;
+      } finally {
+        renderer.setRenderTarget(savedRt);
+        renderer.autoClear = savedAutoClear;
+        armCamBusy = false;
+        lastArmCamUpdate = performance.now();
+      }
+    }
+
+    function renderHudOverlay() {
+      if (!armCamera) return;
+      renderer.autoClear = false;
+      renderer.render(hudScene, hudCam);
+      renderer.autoClear = true;
+    }
+
+    function renderLoop() {
+      requestAnimationFrame(renderLoop);
+      if (viewer) {
+        if (!armCamBusy) {
+          viewer.update();
+          viewer.render();
+        }
+        renderHudOverlay();
+        if (
+          armCamera &&
+          !armCamBusy &&
+          performance.now() - lastArmCamUpdate >= ARM_CAM_UPDATE_MS
+        ) {
+          updateArmCamPiP();
+        }
+      } else if (meshOnlyOrbit) {
+        meshOnlyOrbit.update();
+        renderer.setRenderTarget(null);
+        renderer.autoClear = true;
+        renderer.render(scene, camera);
+        if (armCamera) {
+          renderer.setRenderTarget(armRt);
+          renderer.render(scene, armCamera);
+          renderer.setRenderTarget(null);
+          renderHudOverlay();
+        }
+      }
+    }
 
     const fromWxyz = (wxyz) => new THREE.Quaternion(wxyz[1], wxyz[2], wxyz[3], wxyz[0]);
 
@@ -326,6 +528,7 @@
         armJointRotators = robot.armJoints;
         leftSlideJoint = robot.leftSlide;
         rightSlideJoint = robot.rightSlide;
+        armCamera = robot.armCamera;
       } catch (err) {
         console.error(err);
         statusEl.textContent = "机械臂 OBJ 加载失败";
@@ -339,6 +542,7 @@
         threeScene: scene,
         camera,
         renderer,
+        selfDrivenMode: false,
         useBuiltInControls: true,
         cameraUp: [0, 0, 1],
         initialCameraPosition: [1.8, -1.8, 1.3],
@@ -376,20 +580,16 @@
           /* ignore */
         }
         viewer = null;
-        const orbit = new OrbitControls(camera, renderer.domElement);
-        orbit.target.set(0, 0, 0.35);
-        orbit.enableDamping = true;
-        function meshOnlyLoop() {
-          orbit.update();
-          renderer.render(scene, camera);
-          requestAnimationFrame(meshOnlyLoop);
-        }
-        meshOnlyLoop();
+        meshOnlyOrbit = new OrbitControls(camera, renderer.domElement);
+        meshOnlyOrbit.target.set(0, 0, 0.35);
+        meshOnlyOrbit.enableDamping = true;
+        renderLoop();
         return;
       }
 
       statusEl.textContent = `已加载 ${loaded} 个环境 ply；机械臂/方块为 mesh`;
-      viewer.start();
+      updateArmCamPiP();
+      renderLoop();
     })();
   </script>
 </body>

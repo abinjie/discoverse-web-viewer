@@ -7,17 +7,43 @@
   <style>
     :root { font-family: system-ui, sans-serif; background: #111527; color: #d7defc; }
     html, body { margin: 0; height: 100%; overflow: hidden; }
-    #root { display: grid; grid-template-columns: 1fr 320px; height: 100%; }
-    #view { position: relative; }
+    #root { display: grid; grid-template-columns: 1fr 320px; height: 100%; min-height: 0; }
+    #view { position: relative; overflow: hidden; min-height: 0; height: 100%; }
+    #view > canvas {
+      display: block;
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+    }
     #panel { background: #1c233a; padding: 14px; border-left: 1px solid #2d3552; }
     .row { margin: 8px 0; font-size: 13px; color: #9db0ff; }
     .tip { color: #7f8cc2; font-size: 12px; line-height: 1.5; margin-top: 12px; }
     #status { color: #86e1b3; font-size: 12px; margin-top: 8px; }
+    /* 与 Three.js HUD 中的小窗标签对齐（机械臂右下角画中画旁） */
+    #arm_cam_label {
+      position: absolute;
+      right: max(14px, 2%);
+      /* 与 HUD 小窗对齐：margin 2% + 高度 21% */
+      bottom: calc(max(14px, 2%) + 21vh + 6px);
+      font-size: 11px;
+      color: rgba(215, 222, 252, 0.85);
+      text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+      pointer-events: none;
+      z-index: 3;
+      padding: 3px 6px;
+      border-radius: 4px;
+      background: rgba(22, 32, 58, 0.72);
+      border: 1px solid rgba(99, 120, 183, 0.45);
+    }
   </style>
 </head>
 <body>
   <div id="root">
-    <div id="view"></div>
+    <div id="view">
+      <div id="arm_cam_label">腕部相机 · eye_arm</div>
+    </div>
     <div id="panel">
       <h3 style="margin: 0 0 8px 0;">WebGL 自动叠方块</h3>
       <div class="row">坐标系：armbase 本地坐标</div>
@@ -27,6 +53,7 @@
         操作说明：<br />
         - 鼠标左键拖动空白区域：360°旋转视角<br />
         - 滚轮：缩放<br />
+        - 右下角小窗：机械臂腕部相机（MuJoCo eye_arm）第一视角。<br />
         - 后端正在自动执行 stack_block.py 的抓取逻辑，前端仅做渲染同步。<br />
         - <a href="/hybrid">混合视图：环境 3DGS（ply）+ mesh 机械臂/方块</a><br />
         - <a href="/gs">仅预览 3DGS PLY</a>（<code>/gs?ply=/models/3dgs/...</code>）
@@ -69,6 +96,44 @@
     const orbit = new OrbitControls(camera, renderer.domElement);
     orbit.target.set(0, 0, 0.35);
     orbit.enableDamping = true;
+
+    // 与 MuJoCo airbot_play.xml 中 eye_arm 一致：挂载在 link6 子 body 上
+    const ARM_RT_W = 320;
+    const ARM_RT_H = 240;
+    const armRt = new THREE.WebGLRenderTarget(ARM_RT_W, ARM_RT_H, { depthBuffer: true });
+    armRt.texture.colorSpace = THREE.SRGBColorSpace;
+
+    const hudCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 40);
+    hudCam.position.set(0, 0, 10);
+    const hudScene = new THREE.Scene();
+    const hudMat = new THREE.MeshBasicMaterial({
+      map: armRt.texture,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const hudW = 0.56;
+    const hudH = 0.42;
+    const margin = 0.04;
+    const hudX = 1 - margin - hudW / 2;
+    const hudY = -1 + margin + hudH / 2;
+
+    const hudPlane = new THREE.Mesh(new THREE.PlaneGeometry(hudW, hudH), hudMat);
+    hudPlane.position.set(hudX, hudY, 0);
+    hudPlane.renderOrder = 99999;
+    hudScene.add(hudPlane);
+
+    const frameGeo = new THREE.PlaneGeometry(hudW + 0.012, hudH + 0.012);
+    const frameMat = new THREE.MeshBasicMaterial({
+      color: 0x6378b7,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const hudFrame = new THREE.Mesh(frameGeo, frameMat);
+    hudFrame.position.set(hudX, hudY, -0.001);
+    hudFrame.renderOrder = 99998;
+    hudScene.add(hudFrame);
 
     const hemi = new THREE.HemisphereLight(0xeaf1ff, 0x4a5f86, 0.8);
     scene.add(hemi);
@@ -240,21 +305,41 @@
       link6.add(rightSlide);
       rightSlide.add(cloneWithMaterial(libs.left, meshMatLight));
 
+      // eye_arm：models/mjcf/manipulator/airbot_play/airbot_play.xml
+      const armCamBody = new THREE.Group();
+      link6.add(armCamBody);
+      armCamBody.position.set(-0.105, 0, -0.12);
+      armCamBody.rotation.order = "XYZ";
+      armCamBody.rotation.set(Math.PI, 0, Math.PI / 2);
+      const armCamera = new THREE.PerspectiveCamera(
+        72.5376526571421,
+        ARM_RT_W / ARM_RT_H,
+        0.02,
+        20
+      );
+      armCamera.up.set(0, 0, 1);
+      armCamera.rotation.order = "XYZ";
+      armCamera.rotation.x = -0.5236;
+      armCamBody.add(armCamera);
+
       return {
         armJoints: [j1Rot, j2Rot, j3Rot, j4Rot, j5Rot, j6Rot],
         leftSlide,
         rightSlide,
+        armCamera,
       };
     }
 
     let armJointRotators = [];
     let leftSlideJoint = null;
     let rightSlideJoint = null;
+    let armCamera = null;
     buildAirbotMesh()
       .then((robot) => {
         armJointRotators = robot.armJoints;
         leftSlideJoint = robot.leftSlide;
         rightSlideJoint = robot.rightSlide;
+        armCamera = robot.armCamera;
         statusEl.textContent = "场景加载完成，等待同步...";
       })
       .catch((err) => {
@@ -310,7 +395,22 @@
 
     function render() {
       orbit.update();
+
+      if (armCamera) {
+        renderer.setRenderTarget(armRt);
+        renderer.render(scene, armCamera);
+      }
+
+      renderer.setRenderTarget(null);
+      renderer.autoClear = true;
       renderer.render(scene, camera);
+
+      if (armCamera) {
+        renderer.autoClear = false;
+        renderer.render(hudScene, hudCam);
+        renderer.autoClear = true;
+      }
+
       requestAnimationFrame(render);
     }
     render();
