@@ -15,12 +15,15 @@ function createBowlObject(cfg) {
     roughness: 0.72,
     metalness: 0.03,
     side: THREE.DoubleSide,
+    depthTest: true,
+    depthWrite: true,
   });
 
   const profile = [
-    new THREE.Vector2(0.024, -0.018),
-    new THREE.Vector2(0.042, -0.012),
-    new THREE.Vector2(0.058, 0.004),
+    new THREE.Vector2(0.0, -0.018),
+    new THREE.Vector2(0.026, -0.018),
+    new THREE.Vector2(0.044, -0.008),
+    new THREE.Vector2(0.058, 0.008),
     new THREE.Vector2(0.068, 0.026),
   ];
   const body = new THREE.Mesh(new THREE.LatheGeometry(profile, 48), material);
@@ -36,6 +39,16 @@ function createBowlObject(cfg) {
   base.position.z = -0.021;
   group.add(base);
 
+  const innerBottom = new THREE.Mesh(new THREE.CircleGeometry(0.052, 48), material);
+  innerBottom.position.z = 0.002;
+  group.add(innerBottom);
+
+  group.traverse((node) => {
+    if (node.isMesh) {
+      node.renderOrder = 1000;
+    }
+  });
+
   return group;
 }
 
@@ -43,9 +56,15 @@ function createObject(cfg) {
   if (cfg.type === "bowl") {
     return createBowlObject(cfg);
   }
-  const material = new THREE.MeshStandardMaterial({ color: cfg.color ?? 0xffffff });
+  const material = new THREE.MeshStandardMaterial({
+    color: cfg.color ?? 0xffffff,
+    depthTest: true,
+    depthWrite: true,
+  });
   const size = cfg.size ?? [0.04, 0.04, 0.04];
-  return new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], size[2]), material);
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], size[2]), material);
+  mesh.renderOrder = 1000;
+  return mesh;
 }
 
 export class ObjectRenderer {

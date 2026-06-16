@@ -103,12 +103,36 @@ export class HybridViewer {
     this.tableGroup = new THREE.Group();
     this.tableGroup.visible = false;
     this.scene.add(this.tableGroup);
+    this.tableTopThickness = 0.03;
     const tableTop = new THREE.Mesh(
-      new THREE.BoxGeometry(0.9, 0.6, 0.03),
+      new THREE.BoxGeometry(0.9, 0.6, this.tableTopThickness),
       new THREE.MeshStandardMaterial({ color: 0xf2f3f7, roughness: 0.78, metalness: 0.04 })
     );
-    tableTop.position.set(0.35, 0.0, -0.03);
+    tableTop.position.set(0, 0, -this.tableTopThickness / 2);
     this.tableGroup.add(tableTop);
+    this.meshTableAligned = false;
+  }
+
+  /** Mesh 模式下将占位桌面移到机械臂基座下方（XY 对齐，桌面高度贴近仿真场景）。 */
+  alignMeshTableToBasePose(basePose, { frameCamera = true } = {}) {
+    if (!basePose?.pos || basePose.pos.length < 3) return;
+    if (!this.tableGroup.visible && !this.meshTableActive) return;
+    const [x, y, baseZ] = basePose.pos;
+    if (![x, y, baseZ].every(Number.isFinite)) return;
+
+    const tableSurfaceZ = baseZ - 0.012;
+    this.tableGroup.position.set(x, y, tableSurfaceZ);
+    this.grid.position.set(x, y, 0);
+
+    if (this.meshOnlyOrbit) {
+      this.meshOnlyOrbit.target.set(x, y, baseZ * 0.45 + 0.15);
+      if (frameCamera && !this.meshTableAligned) {
+        this.camera.position.set(x + 1.4, y - 1.2, baseZ + 0.55);
+        this.meshOnlyOrbit.update();
+        this.meshTableAligned = true;
+      }
+    }
+    this.forceRender();
   }
 
   setRobot(robotRenderer) {
@@ -124,8 +148,26 @@ export class HybridViewer {
     }
   }
 
-  async initSplats(splatUrls) {
+  enableMeshOnlyMode(message = "Mesh 渲染模式") {
+    this.meshTableActive = true;
+    this.grid.visible = true;
+    this.tableGroup.visible = true;
+    if (!this.meshOnlyOrbit) {
+      this.meshOnlyOrbit = new OrbitControls(this.camera, this.renderer.domElement);
+      this.meshOnlyOrbit.enableDamping = true;
+    }
+    // 先用默认安装位显示桌面；相机等 /api/state 首帧再对齐
+    this.alignMeshTableToBasePose({ pos: [0.3, 1.0, 0.71] }, { frameCamera: false });
+    this.status(message);
+    return 0;
+  }
+
+  async initSplats(splatUrls, options = {}) {
+    if (!splatUrls?.length) {
+      return this.enableMeshOnlyMode("Mesh 渲染模式：未加载 GS 环境");
+    }
     this.status("初始化 3DGS Viewer...");
+    const splatPosition = options.position ?? [0, 0, 0];
     this.viewer = new Viewer({
       rootElement: this.view,
       threeScene: this.scene,
@@ -148,7 +190,7 @@ export class HybridViewer {
         await this.viewer.addSplatScene(url, {
           splatAlphaRemovalThreshold: 1,
           showLoadingUI: true,
-          position: [0, 0, 0],
+          position: splatPosition,
           rotation: [0, 0, 0, 1],
           scale: [1, 1, 1],
           headers: { "Cache-Control": "no-store", Pragma: "no-cache" },
@@ -161,6 +203,7 @@ export class HybridViewer {
 
     if (loaded === 0) {
       this.status("ply 存在但解析失败，显示占位网格（请看控制台）");
+      this.meshTableActive = true;
       this.grid.visible = true;
       this.tableGroup.visible = true;
       try {
@@ -170,8 +213,8 @@ export class HybridViewer {
       }
       this.viewer = null;
       this.meshOnlyOrbit = new OrbitControls(this.camera, this.renderer.domElement);
-      this.meshOnlyOrbit.target.set(0, 0, 0.35);
       this.meshOnlyOrbit.enableDamping = true;
+      this.alignMeshTableToBasePose({ pos: [0.3, 1.0, 0.71] }, { frameCamera: false });
     }
 
     return loaded;

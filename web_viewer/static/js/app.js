@@ -11,27 +11,67 @@ const ENV_SPLATS_FULL = [
   "/models/3dgs/object/bowl_pink.webgs.ply",
 ];
 
-function resolveEnvSplatUrls() {
+async function fetchViewerConfig() {
+  try {
+    const r = await fetch("/api/config", { cache: "no-store" });
+    return await r.json();
+  } catch {
+    return {};
+  }
+}
+
+function shouldEnableGs(config) {
+  const q = new URLSearchParams(location.search);
+  if (q.get("render") === "mesh" || q.get("gs") === "0") return false;
+  if (q.get("render") === "gs" || q.get("gs") === "1") return true;
+  if (q.get("splats") || q.get("extras") === "1" || q.get("full") === "1") return true;
+  return Boolean(config?.enable_gs);
+}
+
+function resolveEnvSplatUrls(config) {
   const q = new URLSearchParams(location.search);
   const csv = (q.get("splats") || "").trim();
   if (csv) {
     return csv.split(",").map((s) => s.trim()).filter(Boolean);
   }
   if (q.get("extras") === "1" || q.get("full") === "1") return [...ENV_SPLATS_FULL];
-  return [ENV_SPLATS_FULL[0]];
+  if (config?.enable_gs) return [ENV_SPLATS_FULL[0]];
+  return [];
 }
 
-async function getRobotName() {
+function parseNumber(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function resolveGsPosition(config) {
+  const q = new URLSearchParams(location.search);
+  const offset = (q.get("gsOffset") || "").trim();
+  if (offset) {
+    const parts = offset.split(",").map((v) => Number(v.trim()));
+    if (parts.length === 3 && parts.every(Number.isFinite)) return parts;
+    console.warn(`忽略非法 gsOffset 参数: ${offset}`);
+  }
+  const hasUrlOffset = q.has("gsX") || q.has("gsY") || q.has("gsZ");
+  if (hasUrlOffset) {
+    return [
+      parseNumber(q.get("gsX"), 0),
+      parseNumber(q.get("gsY"), 0),
+      parseNumber(q.get("gsZ"), 0),
+    ];
+  }
+  const cfgOffset = config?.gs_offset;
+  if (Array.isArray(cfgOffset) && cfgOffset.length === 3) {
+    return cfgOffset.map((v) => Number(v));
+  }
+  return [0, 0, 0];
+}
+
+async function getRobotName(config) {
   const q = new URLSearchParams(location.search);
   const robot = q.get("robot");
   if (robot) return robot;
-  try {
-    const r = await fetch("/api/config", { cache: "no-store" });
-    const config = await r.json();
-    return config.robot || "airbot_play";
-  } catch {
-    return "airbot_play";
-  }
+  return config?.robot || "airbot_play";
 }
 
 const view = document.getElementById("view");
@@ -43,7 +83,8 @@ const pipCameraNameEl = document.getElementById("pip_camera_name");
 const viewer = new HybridViewer({ view, statusEl, pipCameraNameEl });
 
 try {
-  const robot = createRobotRenderer(await getRobotName());
+  const viewerConfig = await fetchViewerConfig();
+  const robot = createRobotRenderer(await getRobotName(viewerConfig));
   robotNameEl.textContent = robot.getName();
 
   await robot.load({
@@ -57,6 +98,13 @@ try {
   const objectParent = robot.getObjectFrame() || viewer.scene;
   const objects = new ObjectRenderer({ parent: objectParent });
 
+  const enableGs = shouldEnableGs(viewerConfig);
+  const splatUrls = enableGs ? resolveEnvSplatUrls(viewerConfig) : [];
+  const loaded = await viewer.initSplats(splatUrls, { position: resolveGsPosition(viewerConfig) });
+  if (loaded > 0) {
+    viewer.status(`已加载 ${loaded} 个环境 ply；机器人/物体由独立 renderer 驱动`);
+  }
+
   const stateClient = new StateClient({
     onState: (state) => {
       if (!state?.ok) {
@@ -66,6 +114,9 @@ try {
       if (typeof state.time === "number") timeEl.textContent = `${state.time.toFixed(2)} s`;
       robot.applyState(state.robot);
       objects.applyState(state.objects);
+      if (!enableGs && state.robot?.base_pose) {
+        viewer.alignMeshTableToBasePose(state.robot.base_pose);
+      }
       viewer.forceRender();
     },
     onError: (err) => {
@@ -74,8 +125,6 @@ try {
   });
   stateClient.start();
 
-  const loaded = await viewer.initSplats(resolveEnvSplatUrls());
-  if (loaded > 0) viewer.status(`已加载 ${loaded} 个环境 ply；机器人/物体由独立 renderer 驱动`);
   viewer.start();
 } catch (err) {
   console.error(err);

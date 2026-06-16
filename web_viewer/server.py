@@ -10,12 +10,13 @@
 """
 
 import asyncio
+import json
 import os
 import sys
 import threading
 import time
 from contextlib import asynccontextmanager
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import uvicorn
@@ -42,7 +43,14 @@ from discoverse.robots import AirbotPlayIK
 from discoverse.utils import SimpleStateMachine, get_body_tmat, step_func
 from stack_block import SimNode, cfg
 
-STATE: Dict[str, Any] = {"node": None, "sim_thread": None, "args": None, "stop_requested": False}
+STATE: Dict[str, Any] = {
+    "node": None,
+    "sim_thread": None,
+    "args": None,
+    "session_config": None,
+    "stop_requested": False,
+}
+_TASKS_CONFIG_DIR = os.path.join(_REPO_ROOT, "discoverse", "configs", "tasks")
 AIRBOT_JOINT_NAMES = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
 UR5E_JOINT_NAMES = [
     "shoulder_pan_joint",
@@ -56,7 +64,58 @@ BLOCK_NAMES = ["block_red", "block_green", "block_blue"]
 TASK_OBJECT_NAMES = {
     "place_block": ["block_green", "bowl_pink"],
     "stack_block": ["block_red", "block_green", "block_blue"],
+    "cover_cup": ["cup", "lid"],
+    "place_coffeecup": ["coffeecup", "plate_white"],
+    "place_kiwi_fruit": ["kiwi_fruit", "bowl_flower"],
 }
+
+
+def _task_has_yaml(task_name: str) -> bool:
+    return os.path.isfile(os.path.join(_TASKS_CONFIG_DIR, f"{task_name}.yaml"))
+
+
+def _resolve_runtime(robot: str, task: str) -> str:
+    if robot == "airbot_play" and task == "stack_block":
+        return "dedicated"
+    if _task_has_yaml(task):
+        return "universal"
+    return "static_preview"
+
+
+def _load_robot_yaml(robot_name: str) -> Dict[str, Any]:
+    import yaml
+
+    path = os.path.join(_REPO_ROOT, "discoverse", "configs", "robots", f"{robot_name}.yaml")
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def _run_static_preview_sim(args: Any) -> None:
+    import mujoco
+
+    from universal_task_runtime import generate_robot_task_model
+
+    xml_path = args.xml or generate_robot_task_model(args.robot, args.task)
+    mj_model = mujoco.MjModel.from_xml_path(xml_path)
+    mj_data = mujoco.MjData(mj_model)
+    robot_yaml = _load_robot_yaml(args.robot)
+
+    STATE["node"] = {
+        "kind": "static_preview",
+        "robot_name": args.robot,
+        "task_name": args.task,
+        "xml_path": xml_path,
+        "mj_model": mj_model,
+        "mj_data": mj_data,
+        "robot_yaml": robot_yaml,
+    }
+
+    try:
+        while not STATE.get("stop_requested", False):
+            mujoco.mj_forward(mj_model, mj_data)
+            time.sleep(0.05)
+    finally:
+        STATE["node"] = None
 
 
 def _run_airbot_stack_sim(_args: Optional[Any] = None) -> None:
@@ -294,10 +353,17 @@ def _run_universal_task_sim(args: Any) -> None:
 
 
 def _run_sim(args: Optional[Any] = None) -> None:
-    if args is not None and args.robot != "airbot_play":
-        _run_universal_task_sim(args)
+    if args is None:
+        _run_airbot_stack_sim(args)
         return
-    _run_airbot_stack_sim(args)
+
+    runtime = _resolve_runtime(args.robot, args.task)
+    if runtime == "dedicated":
+        _run_airbot_stack_sim(args)
+    elif runtime == "universal":
+        _run_universal_task_sim(args)
+    else:
+        _run_static_preview_sim(args)
 
 
 @asynccontextmanager
@@ -405,6 +471,75 @@ def _pose_from_tmat(tmat: np.ndarray) -> Dict[str, Any]:
     }
 
 
+def _static_preview_node_state(node: Dict[str, Any]) -> Dict[str, Any]:
+    import mujoco
+
+    mj_model = node["mj_model"]
+    mj_data = node["mj_data"]
+    robot_name = node["robot_name"]
+    task_name = node["task_name"]
+    robot_yaml = node["robot_yaml"]
+    kinematics = robot_yaml["kinematics"]
+    base_link = kinematics["base_link"]
+    arm_joint_names: List[str] = list(kinematics["arm_joint_names"])
+
+    try:
+        tmat_base = get_body_tmat(mj_data, base_link)
+    except Exception:
+        tmat_base = get_body_tmat(mj_data, f"{robot_name}_pose")
+    inv_tmat_base = np.linalg.inv(tmat_base)
+
+    joint_values: Dict[str, float] = {}
+    for joint_name in arm_joint_names:
+        joint_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+        if joint_id >= 0:
+            qpos_addr = mj_model.jnt_qposadr[joint_id]
+            joint_values[joint_name] = float(mj_data.qpos[qpos_addr])
+
+    gripper_cfg = robot_yaml.get("gripper", {})
+    gripper_value = 0.0
+    qpos_indices = gripper_cfg.get("qpos_indices") or []
+    if qpos_indices:
+        vals = [float(mj_data.qpos[i]) for i in qpos_indices if i < len(mj_data.qpos)]
+        if vals:
+            gripper_value = sum(vals) / len(vals)
+    joint_values["gripper"] = gripper_value
+
+    objects = {}
+    for object_name in TASK_OBJECT_NAMES.get(task_name, []):
+        try:
+            tmat_obj = get_body_tmat(mj_data, object_name)
+        except Exception:
+            continue
+        objects[object_name] = _pose_from_tmat(inv_tmat_base @ tmat_obj)
+
+    return {
+        "ok": True,
+        "time": float(mj_data.time),
+        "robot": {
+            "name": robot_name,
+            "base_pose": _pose_from_tmat(tmat_base),
+            "joints": joint_values,
+            "joint_order": arm_joint_names + ["gripper"],
+        },
+        "objects": objects,
+        "objects_frame": "robot_base",
+        "task": {
+            "name": task_name,
+            "xml_path": node["xml_path"],
+            "runtime": "static_preview",
+            "state_index": 0,
+            "total_states": 0,
+        },
+    }
+
+
+def _dict_node_state(node: Dict[str, Any]) -> Dict[str, Any]:
+    if node.get("kind") == "static_preview":
+        return _static_preview_node_state(node)
+    return _universal_node_state(node)
+
+
 def _universal_node_state(node: Dict[str, Any]) -> Dict[str, Any]:
     import mujoco
 
@@ -467,7 +602,7 @@ def _legacy_state() -> Dict[str, Any]:
     if node is None:
         return {"ok": False, "error": "sim not ready"}
     if isinstance(node, dict):
-        state = _universal_node_state(node)
+        state = _dict_node_state(node)
         joints = state["robot"]["joints"]
         joint_order = state["robot"]["joint_order"]
         return {
@@ -501,7 +636,7 @@ def _legacy_state() -> Dict[str, Any]:
 def _api_state() -> Dict[str, Any]:
     node = STATE.get("node")
     if isinstance(node, dict):
-        return _universal_node_state(node)
+        return _dict_node_state(node)
 
     legacy = _legacy_state()
     if not legacy.get("ok"):
@@ -542,9 +677,20 @@ async def api_state():
 @app.get("/api/config")
 async def api_config():
     args = STATE.get("args")
+    session_cfg = STATE.get("session_config") or {}
+    robot = getattr(args, "robot", "airbot_play") if args is not None else "airbot_play"
+    task = getattr(args, "task", "stack_block") if args is not None else "stack_block"
+    gs_assets = session_cfg.get("gs_assets") or []
+    if session_cfg.get("enable_gs") and session_cfg.get("gs_scene"):
+        gs_assets = [session_cfg["gs_scene"], *gs_assets]
     return {
-        "robot": getattr(args, "robot", "airbot_play") if args is not None else "airbot_play",
-        "task": getattr(args, "task", "stack_block") if args is not None else "stack_block",
+        "robot": robot,
+        "task": task,
+        "enable_gs": bool(session_cfg.get("enable_gs", False)),
+        "gs_assets": gs_assets,
+        "gs_offset": session_cfg.get("gs_offset") or [0.0, 0.0, 0.0],
+        "runtime": session_cfg.get("runtime") or _resolve_runtime(robot, task),
+        "session_id": session_cfg.get("session_id"),
     }
 
 
@@ -573,16 +719,22 @@ def main() -> None:
     parser.set_defaults(no_random=True)
     parser.add_argument("--randomize", action="store_false", dest="no_random", help="通用任务 reset 时启用场景随机化")
     parser.add_argument("--no-random", action="store_true", help="通用任务 reset 时关闭场景随机化（默认）")
+    parser.add_argument("--session-config", type=str, default=None, help="Launcher 写入的 JSON 会话配置")
     parser.add_argument("--web-host", type=str, default="0.0.0.0")
     parser.add_argument("--web-port", type=int, default=8765)
     args = parser.parse_args()
 
-    if args.task is None:
+    if args.session_config:
+        with open(args.session_config, "r", encoding="utf-8") as f:
+            session_cfg = json.load(f)
+        STATE["session_config"] = session_cfg
+        args.robot = session_cfg["robot"]
+        args.task = session_cfg["task"]
+        args.xml = session_cfg.get("xml_path")
+        args.sync = bool(session_cfg.get("sync", False))
+        args.no_random = not bool(session_cfg.get("randomize", False))
+    elif args.task is None:
         args.task = "place_block" if args.robot == "ur5e" else "stack_block"
-    if args.robot == "airbot_play" and args.task != "stack_block":
-        parser.error("当前 web_viewer 的 airbot_play 后端只支持 task=stack_block")
-    if args.robot == "ur5e" and args.task != "place_block":
-        parser.error("当前 web_viewer 的 ur5e 后端只支持 task=place_block")
 
     STATE["args"] = args
     uvicorn.run(asgi_app, host=args.web_host, port=args.web_port, log_level="info")
